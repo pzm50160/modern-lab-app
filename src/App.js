@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDocs, where } from "firebase/firestore";
+import { getMessaging, getToken, onMessage } from "firebase/messaging"; // 新增 FCM 模組
 
 const firebaseConfig = {
   apiKey: "AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8",
@@ -13,9 +14,10 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const messaging = getMessaging(app); // 初始化 Messaging
 
 const getTaskCardColors = (cat, priority, isDeleted) => {
-  if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' }; // 已刪除任務灰色
+  if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' };
   if (priority) return { bg: '#fff1f0', border: '#ff4d4f', text: '#cf1322' };
   const config = {
     '收檢': { bg: '#fff7e6', border: '#ffa940', text: '#d46b08' },
@@ -35,17 +37,52 @@ function App() {
   const [form, setForm] = useState({ clinic: '', category: '收檢', priority: false, deadline: '' });
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [historySearchDate, setHistorySearchDate] = useState('');
-  const [newCat, setNewCat] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
+  // 新增：推播權限與 Token 取得邏輯
+  const setupNotifications = async (name) => {
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        const token = await getToken(messaging, { 
+          vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE' 
+        });
+        
+        if (token) {
+          console.log("裝置 Token:", token);
+          // 將 Token 更新至該使用者的 Firestore 文件中
+          const q = query(collection(db, "users"), where("name", "==", name));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const userDocId = snap.docs[0].id;
+            await updateDoc(doc(db, "users", userDocId), { fcmToken: token });
+          }
+        }
+      }
+    } catch (error) {
+      console.error("推播設定錯誤:", error);
+    }
+  };
+
   useEffect(() => {
+    // 若已登入，檢查推播權限
+    if (userName) {
+      setupNotifications(userName);
+    }
+
+    // 監聽前台訊息（App 開啟時收到推播）
+    const unsubMessage = onMessage(messaging, (payload) => {
+      alert(`${payload.notification.title}\n${payload.notification.body}`);
+    });
+
     const qTasks = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsubTasks = onSnapshot(qTasks, (s) => setTasks(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const qCats = query(collection(db, "categories"), orderBy("name", "asc"));
     const unsubCats = onSnapshot(qCats, (s) => setCategories(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => { unsubTasks(); unsubCats(); };
-  }, []);
+    
+    return () => { unsubTasks(); unsubCats(); unsubMessage(); };
+  }, [userName]);
 
   const getSortedTasks = (taskList) => {
     const weights = { '收檢': 1, '耗材': 2, '其他': 3 };
@@ -57,19 +94,15 @@ function App() {
     });
   };
 
-  // 歷史記錄搜尋邏輯優化（加入已刪除 status: 3 的任務）
   const filteredHistory = tasks.filter(t => {
     if (t.status !== 2 && t.status !== 3) return false; 
-    
     const matchesKeyword = 
       t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
       t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
       t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
-
-    const compareDate = t.completedAt || t.createdAt; // 若被刪除沒完成時間，則用創建時間比對
+    const compareDate = t.completedAt || t.createdAt;
     const matchesDate = historySearchDate ? 
       compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
-
     return matchesKeyword && matchesDate;
   });
 
@@ -96,6 +129,7 @@ function App() {
   const loginSuccess = (name) => {
     setUserName(name);
     localStorage.setItem('modernLabUser', name);
+    setupNotifications(name); // 登入後啟動推播權限請求
   };
 
   const handleAddTask = async (e) => {
@@ -127,7 +161,6 @@ function App() {
     await updateDoc(doc(db, "tasks", task.id), data);
   };
 
-  // 1. 優化編輯記錄邏輯
   const saveEdit = async (task) => {
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
     const log = `✏️ ${userName} 於 ${nowStr} 修改內容`;
@@ -138,13 +171,12 @@ function App() {
     setEditingId(null);
   };
 
-  // 2. 優化刪除紀錄邏輯 (Soft Delete 改為狀態 3)
   const handleDeleteTask = async (task) => {
     if (!window.confirm("確定刪除此任務？刪除後將移至歷史記錄。")) return;
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
     const log = `🗑️ ${userName} 於 ${nowStr} 刪除任務`;
     await updateDoc(doc(db, "tasks", task.id), {
-      status: 3, // 標記為刪除
+      status: 3,
       history: [...(task.history || []), log]
     });
   };
@@ -152,11 +184,7 @@ function App() {
   const formatTime = (ts) => {
     if (!ts) return '...';
     return ts.toDate().toLocaleString('zh-TW', { 
-      month: 'numeric', 
-      day: 'numeric', 
-      hour: '2-digit', 
-      minute: '2-digit', 
-      hour12: false 
+      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false 
     });
   };
 
@@ -222,21 +250,10 @@ function App() {
       {activeTab === 'history' && (
         <section>
           <div style={styles.searchContainer}>
-            <input 
-              type="text" 
-              placeholder="🔍 搜尋任務、診所、人員..." 
-              value={historySearchTerm} 
-              onChange={e => setHistorySearchTerm(e.target.value)} 
-              style={styles.searchInput}
-            />
+            <input type="text" placeholder="🔍 搜尋任務、診所、人員..." value={historySearchTerm} onChange={e => setHistorySearchTerm(e.target.value)} style={styles.searchInput} />
             <div style={{display:'flex', alignItems:'center', gap:'10px', marginTop:'8px'}}>
-              <span style={{fontSize:'12px', color:'#666'}}>日期篩選(選填):</span>
-              <input 
-                type="date" 
-                value={historySearchDate} 
-                onChange={e => setHistorySearchDate(e.target.value)} 
-                style={styles.dateInputSmall}
-              />
+              <span style={{fontSize:'12px', color:'#666'}}>日期篩選:</span>
+              <input type="date" value={historySearchDate} onChange={e => setHistorySearchDate(e.target.value)} style={styles.dateInputSmall} />
               <button onClick={() => {setHistorySearchTerm(''); setHistorySearchDate('');}} style={styles.clearBtn}>重置</button>
             </div>
           </div>
@@ -278,8 +295,6 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
               <div>📝 發布: {task.creator} | {formatTime(task.createdAt)}</div>
               {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>🏃 接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
               {task.status === 2 && <div style={{color:'green', fontWeight:'bold'}}>✅ 完成: {formatTime(task.completedAt)}</div>}
-              
-              {/* 顯示歷史記錄 (含修改、刪除紀錄) */}
               {task.history && task.history.length > 0 && (
                 <div style={{marginTop:'5px', color:'#666', fontStyle:'italic', fontSize:'12px', borderTop:'1px dashed #ccc', paddingTop:'3px'}}>
                   {task.history[task.history.length - 1]}
@@ -289,7 +304,6 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
           </>
         )}
       </div>
-
       <div style={styles.actionArea}>
         {!isHistory && !isEditing && (
           <>
