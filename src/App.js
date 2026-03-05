@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDocs, where } from "firebase/firestore";
-import { getMessaging, getToken, onMessage } from "firebase/messaging"; // 新增 FCM 模組
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
+// 已整合你的 API Key
 const firebaseConfig = {
   apiKey: "AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8",
   authDomain: "modern-lab-app.firebaseapp.com",
@@ -14,7 +15,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const messaging = getMessaging(app); // 初始化 Messaging
+const messaging = getMessaging(app);
 
 const getTaskCardColors = (cat, priority, isDeleted) => {
   if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' };
@@ -40,7 +41,6 @@ function App() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
-  // 新增：推播權限與 Token 取得邏輯
   const setupNotifications = async (name) => {
     try {
       const permission = await Notification.requestPermission();
@@ -51,7 +51,6 @@ function App() {
         
         if (token) {
           console.log("裝置 Token:", token);
-          // 將 Token 更新至該使用者的 Firestore 文件中
           const q = query(collection(db, "users"), where("name", "==", name));
           const snap = await getDocs(q);
           if (!snap.empty) {
@@ -66,12 +65,10 @@ function App() {
   };
 
   useEffect(() => {
-    // 若已登入，檢查推播權限
     if (userName) {
       setupNotifications(userName);
     }
 
-    // 監聽前台訊息（App 開啟時收到推播）
     const unsubMessage = onMessage(messaging, (payload) => {
       alert(`${payload.notification.title}\n${payload.notification.body}`);
     });
@@ -84,30 +81,66 @@ function App() {
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
-  const getSortedTasks = (taskList) => {
-    const weights = { '收檢': 1, '耗材': 2, '其他': 3 };
-    return [...taskList].sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority ? -1 : 1;
-      const wa = weights[a.category] || 99, wb = weights[b.category] || 99;
-      if (wa !== wb) return wa - wb;
-      return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
-    });
+  const handleAddTask = async (e) => {
+    e.preventDefault();
+    if (!form.clinic) return;
+
+    try {
+      await addDoc(collection(db, "tasks"), {
+        ...form,
+        status: 0, creator: userName, createdAt: serverTimestamp(), picker: '', history: []
+      });
+
+      const userSnap = await getDocs(collection(db, "users"));
+      const tokens = [];
+      userSnap.forEach(uDoc => {
+        const uData = uDoc.data();
+        if (uData.fcmToken && uData.name !== userName) {
+          tokens.push(uData.fcmToken);
+        }
+      });
+
+      if (tokens.length > 0) {
+        tokens.forEach(async (targetToken) => {
+          try {
+            await fetch('https://fcm.googleapis.com/fcm/send', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'key=AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8' 
+              },
+              body: JSON.stringify({
+                to: targetToken,
+                notification: {
+                  title: `🚨 實驗室新任務`,
+                  body: `${userName} 發布了：[${form.category}] ${form.clinic}`,
+                  icon: "/logo192.png"
+                },
+                data: {
+                  click_action: window.location.origin
+                }
+              })
+            });
+            console.log("✅ 推送已送出至：", targetToken);
+          } catch (e) {
+            console.error("❌ 發送失敗", e);
+          }
+        });
+      }
+
+      // 刪除了 alert，僅保留表單重置
+      setForm({ clinic: '', category: '收檢', priority: false, deadline: '' });
+      
+    } catch (err) {
+      console.error("發布失敗", err);
+    }
   };
 
-  const filteredHistory = tasks.filter(t => {
-    if (t.status !== 2 && t.status !== 3) return false; 
-    const matchesKeyword = 
-      t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
-      t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
-      t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
-    const compareDate = t.completedAt || t.createdAt;
-    const matchesDate = historySearchDate ? 
-      compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
-    return matchesKeyword && matchesDate;
-  });
-
-  const lobbyCount = tasks.filter(t => t.status === 0).length;
-  const myTasksCount = tasks.filter(t => t.status === 1 && t.picker === userName).length;
+  const loginSuccess = (name) => {
+    setUserName(name);
+    localStorage.setItem('modernLabUser', name);
+    setupNotifications(name);
+  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -124,22 +157,6 @@ function App() {
       const user = snap.docs[0].data();
       user.password === password ? loginSuccess(name) : alert("密碼錯誤");
     }
-  };
-
-  const loginSuccess = (name) => {
-    setUserName(name);
-    localStorage.setItem('modernLabUser', name);
-    setupNotifications(name); // 登入後啟動推播權限請求
-  };
-
-  const handleAddTask = async (e) => {
-    e.preventDefault();
-    if (!form.clinic) return;
-    await addDoc(collection(db, "tasks"), {
-      ...form,
-      status: 0, creator: userName, createdAt: serverTimestamp(), picker: '', history: []
-    });
-    setForm({ clinic: '', category: '收檢', priority: false, deadline: '' });
   };
 
   const updateStatus = async (task, newStatus) => {
@@ -187,6 +204,31 @@ function App() {
       month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false 
     });
   };
+
+  const getSortedTasks = (taskList) => {
+    const weights = { '收檢': 1, '耗材': 2, '其他': 3 };
+    return [...taskList].sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority ? -1 : 1;
+      const wa = weights[a.category] || 99, wb = weights[b.category] || 99;
+      if (wa !== wb) return wa - wb;
+      return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+    });
+  };
+
+  const filteredHistory = tasks.filter(t => {
+    if (t.status !== 2 && t.status !== 3) return false; 
+    const matchesKeyword = 
+      t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
+      t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
+      t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
+    const compareDate = t.completedAt || t.createdAt;
+    const matchesDate = historySearchDate ? 
+      compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
+    return matchesKeyword && matchesDate;
+  });
+
+  const lobbyCount = tasks.filter(t => t.status === 0).length;
+  const myTasksCount = tasks.filter(t => t.status === 1 && t.picker === userName).length;
 
   if (!userName) return (
     <div style={styles.mobileWrapper}>
