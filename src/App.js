@@ -41,6 +41,31 @@ function App() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
+  // --- 1. 新增：主動檢查 Service Worker 更新邏輯 ---
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then((registration) => {
+        // 主動檢查伺服器是否有新版本
+        registration.update();
+
+        // 監聽更新發現事件
+        registration.onupdatefound = () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.onstatechange = () => {
+              // 當新版下載完成且正在等待生效時
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                if (window.confirm("發現新版本（修正通知問題），是否立即更新？")) {
+                  window.location.reload();
+                }
+              }
+            };
+          }
+        };
+      });
+    }
+  }, []);
+
   const setupNotifications = async (name) => {
     try {
       const permission = await Notification.requestPermission();
@@ -87,8 +112,6 @@ function App() {
     if (!form.clinic) return;
 
     try {
-      // 步驟 1：只負責把任務存入 Firestore
-      // 只要這筆資料一進去，雲端函式就會「感應到」並自動發推播給其他人
       await addDoc(collection(db, "tasks"), {
         ...form,
         status: 0, 
@@ -97,10 +120,7 @@ function App() {
         picker: '', 
         history: []
       });
-
-      // 步驟 2：直接清空表單，不需要在前端執行任何 fetch 推播動作
       setForm({ clinic: '', category: '收檢', priority: false, deadline: '' });
-      
     } catch (err) {
       console.error("發布失敗", err);
     }
