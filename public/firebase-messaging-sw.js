@@ -1,6 +1,7 @@
 importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js');
 
+// 初始化 Firebase
 firebase.initializeApp({
   apiKey: "AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8",
   projectId: "modern-lab-app",
@@ -10,14 +11,11 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
-// 監聽背景訊息
+/**
+ * 監聽背景訊息
+ * 當 App 在背景或關閉時收到推播，FCM 會自動根據 payload.notification 顯示通知。
+ * 這裡只需保留監聽用於偵錯，不要再手動呼叫 showNotification 避免重複。
+ */
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] 收到背景訊息 ', payload);
-  const notificationTitle = payload.notification.title;
-  const notificationOptions = {
-    body: payload.notification.body,
-    icon: '/logo192.png'
-  };
-
-  self.registration.showNotification(notificationTitle, notificationOptions);
 });

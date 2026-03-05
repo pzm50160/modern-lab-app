@@ -1,43 +1,48 @@
-const functions = require("firebase-functions");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
+
 admin.initializeApp();
 
-// 監控 tasks 集合的新增事件
-exports.sendTaskNotification = functions.firestore
-    .document("tasks/{taskId}")
-    .onCreate(async (snap, context) => {
-        const newTask = snap.data();
+exports.sendTaskNotification = onDocumentCreated("tasks/{taskId}", async (event) => {
+    const newTask = event.data.data();
+    if (!newTask) return null;
+
+    try {
+        // 1. 抓取所有員工的 Token
+        const userSnap = await admin.firestore().collection("users").get();
         
-        // 1. 設定通知內容
-        const payload = {
-            notification: {
-                title: `🚨 實驗室新任務：[${newTask.category}]`,
-                body: `${newTask.clinic} - 由 ${newTask.creator} 發布`,
-                clickAction: "FLUTTER_NOTIFICATION_CLICK", // 確保手機點擊後開啟 App
-            }
-        };
+        // 使用 Set 來自動過濾掉重複的 Token
+        const tokenSet = new Set();
+        
+        userSnap.forEach(doc => {
+          const data = doc.data();
+          // 排除發布者本人，且確保有 Token
+          if (data.fcmToken && data.name !== newTask.creator) {
+            tokenSet.add(data.fcmToken); 
+          }
+        });
 
-        try {
-            // 2. 找出所有具備 Token 的其他員工
-            const userSnap = await admin.firestore().collection("users").get();
-            const tokens = [];
-            
-            userSnap.forEach(doc => {
-                const data = doc.data();
-                // 排除發布者本人
-                if (data.fcmToken && data.name !== newTask.creator) {
-                    tokens.push(data.fcmToken);
-                }
-            });
+        // 將 Set 轉回陣列
+        const finalTokens = Array.from(tokenSet);
 
-            if (tokens.length === 0) return null;
+        if (finalTokens.length > 0) {
+            // 2. 建立單一通知物件
+            const message = {
+                notification: {
+                    title: `🚨 實驗室新任務`,
+                    body: `${newTask.creator} 發布了：[${newTask.category}] ${newTask.clinic}`,
+                },
+                // 這是發送給多個人的標準用法
+                tokens: finalTokens, 
+            };
 
-            // 3. 透過管理權限發送推播 (這不會有 CORS 問題)
-            const response = await admin.messaging().sendToDevice(tokens, payload);
-            console.log(`成功發送給 ${response.successCount} 個裝置`);
-            return null;
-        } catch (error) {
-            console.error("發送失敗:", error);
-            return null;
+            // 3. 只執行一次發送指令
+            const response = await admin.messaging().sendEachForMulticast(message);
+            console.log(`✅ 成功通知 ${response.successCount} 台裝置，ID: ${event.params.taskId}`);
         }
-    });
+        return null;
+    } catch (error) {
+        console.error("❌ 發送失敗:", error);
+        return null;
+    }
+});

@@ -81,54 +81,24 @@ function App() {
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
+  // 更新後的發布邏輯：僅負責存入 Firestore
   const handleAddTask = async (e) => {
     e.preventDefault();
     if (!form.clinic) return;
 
     try {
+      // 步驟 1：只負責把任務存入 Firestore
+      // 只要這筆資料一進去，雲端函式就會「感應到」並自動發推播給其他人
       await addDoc(collection(db, "tasks"), {
         ...form,
-        status: 0, creator: userName, createdAt: serverTimestamp(), picker: '', history: []
+        status: 0, 
+        creator: userName, 
+        createdAt: serverTimestamp(), 
+        picker: '', 
+        history: []
       });
 
-      const userSnap = await getDocs(collection(db, "users"));
-      const tokens = [];
-      userSnap.forEach(uDoc => {
-        const uData = uDoc.data();
-        if (uData.fcmToken && uData.name !== userName) {
-          tokens.push(uData.fcmToken);
-        }
-      });
-
-      if (tokens.length > 0) {
-        tokens.forEach(async (targetToken) => {
-          try {
-            await fetch('https://fcm.googleapis.com/fcm/send', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'key=AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8' 
-              },
-              body: JSON.stringify({
-                to: targetToken,
-                notification: {
-                  title: `🚨 實驗室新任務`,
-                  body: `${userName} 發布了：[${form.category}] ${form.clinic}`,
-                  icon: "/logo192.png"
-                },
-                data: {
-                  click_action: window.location.origin
-                }
-              })
-            });
-            console.log("✅ 推送已送出至：", targetToken);
-          } catch (e) {
-            console.error("❌ 發送失敗", e);
-          }
-        });
-      }
-
-      // 刪除了 alert，僅保留表單重置
+      // 步驟 2：直接清空表單，不需要在前端執行任何 fetch 推播動作
       setForm({ clinic: '', category: '收檢', priority: false, deadline: '' });
       
     } catch (err) {
@@ -335,7 +305,7 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
             <div style={styles.details}>
               {task.deadline && <span style={{color:'#d4380d', fontWeight:'bold'}}>⏰ 限時: {task.deadline} | </span>}
               <div>📝 發布: {task.creator} | {formatTime(task.createdAt)}</div>
-              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>🏃 接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
+              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>跑單: {task.picker} | {formatTime(task.claimedAt)}</div>}
               {task.status === 2 && <div style={{color:'green', fontWeight:'bold'}}>✅ 完成: {formatTime(task.completedAt)}</div>}
               {task.history && task.history.length > 0 && (
                 <div style={{marginTop:'5px', color:'#666', fontStyle:'italic', fontSize:'12px', borderTop:'1px dashed #ccc', paddingTop:'3px'}}>
