@@ -17,6 +17,7 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const messaging = getMessaging(app);
 
+// 保留原本的顏色配置功能
 const getTaskCardColors = (cat, priority, isDeleted) => {
   if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' };
   if (priority) return { bg: '#fff1f0', border: '#ff4d4f', text: '#cf1322' };
@@ -29,6 +30,7 @@ const getTaskCardColors = (cat, priority, isDeleted) => {
 };
 
 function App() {
+  // 保留所有原本的狀態
   const [tasks, setTasks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [userName, setUserName] = useState(localStorage.getItem('modernLabUser') || '');
@@ -41,21 +43,27 @@ function App() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
-  // --- 1. 新增：主動檢查 Service Worker 更新邏輯 ---
+  // --- 1. 整合後的：Service Worker 就緒、自動更新與 Token 背景同步邏輯 ---
   useEffect(() => {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.ready.then((registration) => {
-        // 主動檢查伺服器是否有新版本
+      navigator.serviceWorker.ready.then(async (registration) => {
+        // 1. 每次開啟都主動檢查伺服器是否有新版本
         registration.update();
 
-        // 監聽更新發現事件
+        // 2. 如果已經是登入狀態，主動同步最新的 FCM Token
+        // 確保在 SW 準備就緒後執行，解決不需要重新登入即可更新 Token 的問題
+        if (userName) {
+          console.log("偵測到已登入，開始背景同步 Token...");
+          setupNotifications(userName);
+        }
+
+        // 3. 監聽更新發現事件
         registration.onupdatefound = () => {
           const newWorker = registration.installing;
           if (newWorker) {
             newWorker.onstatechange = () => {
-              // 當新版下載完成且正在等待生效時
               if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                if (window.confirm("發現新版本（修正通知問題），是否立即更新？")) {
+                if (window.confirm("系統有重要通知更新，是否立即載入？")) {
                   window.location.reload();
                 }
               }
@@ -64,8 +72,9 @@ function App() {
         };
       });
     }
-  }, []);
+  }, [userName]); // 加入 userName 依賴，確保登入狀態改變時也會觸發同步
 
+  // 保留原本的通知設定功能
   const setupNotifications = async (name) => {
     try {
       const permission = await Notification.requestPermission();
@@ -89,11 +98,8 @@ function App() {
     }
   };
 
+  // 保留原本的資料庫監聽與前景訊息功能
   useEffect(() => {
-    if (userName) {
-      setupNotifications(userName);
-    }
-
     const unsubMessage = onMessage(messaging, (payload) => {
       alert(`${payload.notification.title}\n${payload.notification.body}`);
     });
@@ -106,24 +112,16 @@ function App() {
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
-  // 更新後的發布邏輯：僅負責存入 Firestore
+  // --- 保留原本的所有核心功能函數 (無刪減) ---
   const handleAddTask = async (e) => {
     e.preventDefault();
     if (!form.clinic) return;
-
     try {
       await addDoc(collection(db, "tasks"), {
-        ...form,
-        status: 0, 
-        creator: userName, 
-        createdAt: serverTimestamp(), 
-        picker: '', 
-        history: []
+        ...form, status: 0, creator: userName, createdAt: serverTimestamp(), picker: '', history: []
       });
       setForm({ clinic: '', category: '收檢', priority: false, deadline: '' });
-    } catch (err) {
-      console.error("發布失敗", err);
-    }
+    } catch (err) { console.error("發布失敗", err); }
   };
 
   const loginSuccess = (name) => {
@@ -152,17 +150,11 @@ function App() {
   const updateStatus = async (task, newStatus) => {
     const data = { status: newStatus };
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
-    if (newStatus === 1) { 
-      data.picker = userName; 
-      data.claimedAt = serverTimestamp(); 
-    }
-    else if (newStatus === 2) { 
-      data.completedAt = serverTimestamp(); 
-    }
+    if (newStatus === 1) { data.picker = userName; data.claimedAt = serverTimestamp(); }
+    else if (newStatus === 2) { data.completedAt = serverTimestamp(); }
     else if (newStatus === 0) {
       if (!window.confirm("確定退回？")) return;
-      data.picker = ''; 
-      data.claimedAt = null;
+      data.picker = ''; data.claimedAt = null;
       data.history = [...(task.history || []), `⚠️ ${userName} 於 ${nowStr} 退回` ];
     }
     await updateDoc(doc(db, "tasks", task.id), data);
@@ -171,10 +163,7 @@ function App() {
   const saveEdit = async (task) => {
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
     const log = `✏️ ${userName} 於 ${nowStr} 修改內容`;
-    await updateDoc(doc(db, "tasks", task.id), {
-      ...editForm,
-      history: [...(task.history || []), log]
-    });
+    await updateDoc(doc(db, "tasks", task.id), { ...editForm, history: [...(task.history || []), log] });
     setEditingId(null);
   };
 
@@ -182,17 +171,13 @@ function App() {
     if (!window.confirm("確定刪除此任務？刪除後將移至歷史記錄。")) return;
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
     const log = `🗑️ ${userName} 於 ${nowStr} 刪除任務`;
-    await updateDoc(doc(db, "tasks", task.id), {
-      status: 3,
-      history: [...(task.history || []), log]
-    });
+    await updateDoc(doc(db, "tasks", task.id), { status: 3, history: [...(task.history || []), log] });
   };
 
+  // --- 保留時間格式化與排序邏輯 (無刪減) ---
   const formatTime = (ts) => {
     if (!ts) return '...';
-    return ts.toDate().toLocaleString('zh-TW', { 
-      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false 
-    });
+    return ts.toDate().toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
   };
 
   const getSortedTasks = (taskList) => {
@@ -207,19 +192,18 @@ function App() {
 
   const filteredHistory = tasks.filter(t => {
     if (t.status !== 2 && t.status !== 3) return false; 
-    const matchesKeyword = 
-      t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
+    const matchesKeyword = t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
       t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
       t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
     const compareDate = t.completedAt || t.createdAt;
-    const matchesDate = historySearchDate ? 
-      compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
+    const matchesDate = historySearchDate ? compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
     return matchesKeyword && matchesDate;
   });
 
   const lobbyCount = tasks.filter(t => t.status === 0).length;
   const myTasksCount = tasks.filter(t => t.status === 1 && t.picker === userName).length;
 
+  // --- 介面渲染部分 (完整保留) ---
   if (!userName) return (
     <div style={styles.mobileWrapper}>
       <div style={styles.loginCard}>
@@ -241,12 +225,8 @@ function App() {
       </header>
 
       <nav style={styles.tabNav}>
-        <button onClick={() => setActiveTab('lobby')} style={activeTab === 'lobby' ? styles.activeTab : styles.tab}>
-          大廳 {lobbyCount > 0 && <span style={styles.badge}>{lobbyCount}</span>}
-        </button>
-        <button onClick={() => setActiveTab('myTasks')} style={activeTab === 'myTasks' ? styles.activeTab : styles.tab}>
-          我的 {myTasksCount > 0 && <span style={styles.badgeMy}>{myTasksCount}</span>}
-        </button>
+        <button onClick={() => setActiveTab('lobby')} style={activeTab === 'lobby' ? styles.activeTab : styles.tab}>大廳 {lobbyCount > 0 && <span style={styles.badge}>{lobbyCount}</span>}</button>
+        <button onClick={() => setActiveTab('myTasks')} style={activeTab === 'myTasks' ? styles.activeTab : styles.tab}>我的 {myTasksCount > 0 && <span style={styles.badgeMy}>{myTasksCount}</span>}</button>
         <button onClick={() => setActiveTab('history')} style={activeTab === 'history' ? styles.activeTab : styles.tab}>歷史搜尋</button>
       </nav>
 
@@ -298,10 +278,10 @@ function App() {
   );
 }
 
+// 保留 TaskCard 與樣式物件 (完整保留)
 const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats }) => {
   const isDeleted = task.status === 3;
   const colors = getTaskCardColors(isEditing ? editForm.category : task.category, task.priority, isDeleted);
-  
   return (
     <div style={{...styles.card, backgroundColor: colors.bg, border: `1px solid ${colors.border}`, borderLeft: `8px solid ${colors.border}`}}>
       <div style={{flex: 1, minWidth: 0}}>
