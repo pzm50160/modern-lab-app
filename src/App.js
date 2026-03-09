@@ -18,7 +18,7 @@ const db = getFirestore(app);
 const messaging = getMessaging(app);
 
 // 輔助函數：取得今天的日期字串 (YYYY-MM-DD)
-const getTodayStr = () => new Date().toLocaleDateString('en-CA'); // 使用本地時間格式確保準確性
+const getTodayStr = () => new Date().toLocaleDateString('en-CA');
 
 const getTaskCardColors = (cat, priority, isDeleted) => {
   if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' };
@@ -40,7 +40,7 @@ function App() {
   
   const [form, setForm] = useState({ clinic: '', category: '收檢', priority: false, deadline: '' });
   
-  // 歷史搜尋狀態：預設為當天
+  // 歷史搜尋狀態
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [historyStartDate, setHistoryStartDate] = useState(getTodayStr());
   const [historyEndDate, setHistoryEndDate] = useState(getTodayStr());
@@ -48,7 +48,7 @@ function App() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
-  // --- 新增：當切換到歷史頁籤時，強制重設日期為當天 ---
+  // --- 1. 當切換到歷史頁籤時，自動顯示當天歷史資料 ---
   useEffect(() => {
     if (activeTab === 'history') {
       setHistoryStartDate(getTodayStr());
@@ -57,20 +57,26 @@ function App() {
     }
   }, [activeTab]);
 
-  // Service Worker 更新與 Token 同步 (保持不變)
+  // --- 2. 強化版 Service Worker 更新與 Token 自動同步邏輯 ---
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.ready.then(async (registration) => {
         registration.update();
+
         if (userName) {
+          console.log("偵測到已登入，開始背景同步 Token...");
           setupNotifications(userName);
+          
+          // 5 秒後補跑一次，確保資料庫絕對有拿到最新 Token
+          setTimeout(() => setupNotifications(userName), 5000);
         }
+
         registration.onupdatefound = () => {
           const newWorker = registration.installing;
           if (newWorker) {
             newWorker.onstatechange = () => {
               if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                if (window.confirm("系統有重要通知更新，是否立即載入？")) {
+                if (window.confirm("發現系統更新，請點擊確定以確保通知正常收發。")) {
                   window.location.reload();
                 }
               }
@@ -81,23 +87,52 @@ function App() {
     }
   }, [userName]);
 
+  // --- 3. 強化版通知設定：強制檢查雲端 Token，無則再次詢問 ---
   const setupNotifications = async (name) => {
     try {
-      const permission = await Notification.requestPermission();
-      if (permission === 'granted') {
+      let currentPermission = Notification.permission;
+
+      // 檢查雲端帳號是否有 Token
+      const q = query(collection(db, "users"), where("name", "==", name));
+      const snap = await getDocs(q);
+      
+      if (snap.empty) return;
+      
+      const userDoc = snap.docs[0];
+      const userData = userDoc.data();
+      const hasTokenInDB = !!userData.fcmToken;
+
+      // 如果資料庫沒 Token 或權限沒開，主動要求權限
+      if (!hasTokenInDB || currentPermission !== 'granted') {
+        console.log("偵測到帳號無推播金鑰或權限未開啟，嘗試請求權限...");
+        currentPermission = await Notification.requestPermission();
+      }
+
+      if (currentPermission === 'granted') {
+        const registration = await navigator.serviceWorker.ready;
+        
         const token = await getToken(messaging, { 
-          vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE' 
+          vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE',
+          serviceWorkerRegistration: registration 
         });
+        
         if (token) {
-          const q = query(collection(db, "users"), where("name", "==", name));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const userDocId = snap.docs[0].id;
-            await updateDoc(doc(db, "users", userDocId), { fcmToken: token });
+          if (userData.fcmToken !== token) {
+            await updateDoc(doc(db, "users", userDoc.id), { 
+              fcmToken: token,
+              lastTokenUpdate: serverTimestamp() 
+            });
+            console.log("最新 Token 已成功同步至雲端");
+          } else {
+            console.log("Token 已存在且為最新，無需更新");
           }
         }
+      } else {
+        console.warn("通知權限仍未獲得，請點擊網址列旁的鎖頭檢查權限設定");
       }
-    } catch (error) { console.error("推播設定錯誤:", error); }
+    } catch (error) {
+      console.error("推播設定錯誤:", error);
+    }
   };
 
   useEffect(() => {
@@ -111,7 +146,7 @@ function App() {
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
-  // 核心功能函數 (無刪減)
+  // 其餘核心功能函數 ( handleAddTask, handleAuth, updateStatus, saveEdit, handleDeleteTask )
   const handleAddTask = async (e) => {
     e.preventDefault();
     if (!form.clinic) return;
@@ -188,7 +223,6 @@ function App() {
     });
   };
 
-  // 歷史搜尋過濾邏輯
   const filteredHistory = tasks.filter(t => {
     if (t.status !== 2 && t.status !== 3) return false; 
     const matchesKeyword = t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
@@ -197,17 +231,14 @@ function App() {
     
     const compareDateTs = t.completedAt || t.createdAt;
     if (!compareDateTs) return false;
-    
     const taskDateStr = compareDateTs.toDate().toISOString().split('T')[0];
     const matchesDate = taskDateStr >= historyStartDate && taskDateStr <= historyEndDate;
-    
     return matchesKeyword && matchesDate;
   });
 
   const lobbyCount = tasks.filter(t => t.status === 0).length;
   const myTasksCount = tasks.filter(t => t.status === 1 && t.picker === userName).length;
 
-  // 介面渲染
   if (!userName) return (
     <div style={styles.mobileWrapper}>
       <div style={styles.loginCard}>
@@ -267,7 +298,6 @@ function App() {
         <section>
           <div style={styles.searchContainer}>
             <input type="text" placeholder="🔍 搜尋關鍵字..." value={historySearchTerm} onChange={e => setHistorySearchTerm(e.target.value)} style={styles.searchInput} />
-            
             <div style={{display:'flex', flexWrap:'wrap', alignItems:'center', gap:'8px', marginTop:'10px'}}>
               <div style={{display:'flex', alignItems:'center', gap:'5px'}}>
                 <span style={{fontSize:'12px', color:'#666'}}>從:</span>
@@ -284,7 +314,6 @@ function App() {
               }} style={styles.clearBtn}>重置今天</button>
             </div>
           </div>
-
           {filteredHistory.length > 0 ? filteredHistory.map(t => (
             <TaskCard key={t.id} task={t} userName={userName} formatTime={formatTime} isHistory />
           )) : <div style={{textAlign:'center', padding:'40px', color:'#999'}}>今天尚無歷史任務</div>}

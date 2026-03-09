@@ -1,4 +1,4 @@
-// Version: 2026.03.09.01 (版本號更新，確保觸發 App.js 檢查)
+// Version: 2026.03.09.03 (版本號更新，確保觸發 App.js 檢查)
 
 // 1. 強制立即更新機制：讓新版 SW 下載後不必等待，直接取代舊版
 self.addEventListener('install', () => {
