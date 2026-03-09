@@ -3,7 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDocs, where } from "firebase/firestore";
 import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
-// 已整合你的 API Key
+// Firebase 配置
 const firebaseConfig = {
   apiKey: "AIzaSyCaxWnFi78Rrra5gEuFRWPN-4jdEUFWLp8",
   authDomain: "modern-lab-app.firebaseapp.com",
@@ -17,7 +17,9 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const messaging = getMessaging(app);
 
-// 保留原本的顏色配置功能
+// 輔助函數：取得今天的日期字串 (YYYY-MM-DD)
+const getTodayStr = () => new Date().toLocaleDateString('en-CA'); // 使用本地時間格式確保準確性
+
 const getTaskCardColors = (cat, priority, isDeleted) => {
   if (isDeleted) return { bg: '#f5f5f5', border: '#d9d9d9', text: '#bfbfbf' };
   if (priority) return { bg: '#fff1f0', border: '#ff4d4f', text: '#cf1322' };
@@ -30,7 +32,6 @@ const getTaskCardColors = (cat, priority, isDeleted) => {
 };
 
 function App() {
-  // 保留所有原本的狀態
   const [tasks, setTasks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [userName, setUserName] = useState(localStorage.getItem('modernLabUser') || '');
@@ -38,26 +39,32 @@ function App() {
   const [loginForm, setLoginForm] = useState({ name: '', password: '' });
   
   const [form, setForm] = useState({ clinic: '', category: '收檢', priority: false, deadline: '' });
+  
+  // 歷史搜尋狀態：預設為當天
   const [historySearchTerm, setHistorySearchTerm] = useState('');
-  const [historySearchDate, setHistorySearchDate] = useState('');
+  const [historyStartDate, setHistoryStartDate] = useState(getTodayStr());
+  const [historyEndDate, setHistoryEndDate] = useState(getTodayStr());
+  
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ clinic: '', category: '', deadline: '' });
 
-  // --- 1. 整合後的：Service Worker 就緒、自動更新與 Token 背景同步邏輯 ---
+  // --- 新增：當切換到歷史頁籤時，強制重設日期為當天 ---
+  useEffect(() => {
+    if (activeTab === 'history') {
+      setHistoryStartDate(getTodayStr());
+      setHistoryEndDate(getTodayStr());
+      setHistorySearchTerm('');
+    }
+  }, [activeTab]);
+
+  // Service Worker 更新與 Token 同步 (保持不變)
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.ready.then(async (registration) => {
-        // 1. 每次開啟都主動檢查伺服器是否有新版本
         registration.update();
-
-        // 2. 如果已經是登入狀態，主動同步最新的 FCM Token
-        // 確保在 SW 準備就緒後執行，解決不需要重新登入即可更新 Token 的問題
         if (userName) {
-          console.log("偵測到已登入，開始背景同步 Token...");
           setupNotifications(userName);
         }
-
-        // 3. 監聽更新發現事件
         registration.onupdatefound = () => {
           const newWorker = registration.installing;
           if (newWorker) {
@@ -72,9 +79,8 @@ function App() {
         };
       });
     }
-  }, [userName]); // 加入 userName 依賴，確保登入狀態改變時也會觸發同步
+  }, [userName]);
 
-  // 保留原本的通知設定功能
   const setupNotifications = async (name) => {
     try {
       const permission = await Notification.requestPermission();
@@ -82,9 +88,7 @@ function App() {
         const token = await getToken(messaging, { 
           vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE' 
         });
-        
         if (token) {
-          console.log("裝置 Token:", token);
           const q = query(collection(db, "users"), where("name", "==", name));
           const snap = await getDocs(q);
           if (!snap.empty) {
@@ -93,26 +97,21 @@ function App() {
           }
         }
       }
-    } catch (error) {
-      console.error("推播設定錯誤:", error);
-    }
+    } catch (error) { console.error("推播設定錯誤:", error); }
   };
 
-  // 保留原本的資料庫監聽與前景訊息功能
   useEffect(() => {
     const unsubMessage = onMessage(messaging, (payload) => {
       alert(`${payload.notification.title}\n${payload.notification.body}`);
     });
-
     const qTasks = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsubTasks = onSnapshot(qTasks, (s) => setTasks(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const qCats = query(collection(db, "categories"), orderBy("name", "asc"));
     const unsubCats = onSnapshot(qCats, (s) => setCategories(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
-  // --- 保留原本的所有核心功能函數 (無刪減) ---
+  // 核心功能函數 (無刪減)
   const handleAddTask = async (e) => {
     e.preventDefault();
     if (!form.clinic) return;
@@ -174,7 +173,6 @@ function App() {
     await updateDoc(doc(db, "tasks", task.id), { status: 3, history: [...(task.history || []), log] });
   };
 
-  // --- 保留時間格式化與排序邏輯 (無刪減) ---
   const formatTime = (ts) => {
     if (!ts) return '...';
     return ts.toDate().toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
@@ -190,20 +188,26 @@ function App() {
     });
   };
 
+  // 歷史搜尋過濾邏輯
   const filteredHistory = tasks.filter(t => {
     if (t.status !== 2 && t.status !== 3) return false; 
     const matchesKeyword = t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
       t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
       t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
-    const compareDate = t.completedAt || t.createdAt;
-    const matchesDate = historySearchDate ? compareDate?.toDate().toISOString().split('T')[0] === historySearchDate : true;
+    
+    const compareDateTs = t.completedAt || t.createdAt;
+    if (!compareDateTs) return false;
+    
+    const taskDateStr = compareDateTs.toDate().toISOString().split('T')[0];
+    const matchesDate = taskDateStr >= historyStartDate && taskDateStr <= historyEndDate;
+    
     return matchesKeyword && matchesDate;
   });
 
   const lobbyCount = tasks.filter(t => t.status === 0).length;
   const myTasksCount = tasks.filter(t => t.status === 1 && t.picker === userName).length;
 
-  // --- 介面渲染部分 (完整保留) ---
+  // 介面渲染
   if (!userName) return (
     <div style={styles.mobileWrapper}>
       <div style={styles.loginCard}>
@@ -262,23 +266,34 @@ function App() {
       {activeTab === 'history' && (
         <section>
           <div style={styles.searchContainer}>
-            <input type="text" placeholder="🔍 搜尋任務、診所、人員..." value={historySearchTerm} onChange={e => setHistorySearchTerm(e.target.value)} style={styles.searchInput} />
-            <div style={{display:'flex', alignItems:'center', gap:'10px', marginTop:'8px'}}>
-              <span style={{fontSize:'12px', color:'#666'}}>日期篩選:</span>
-              <input type="date" value={historySearchDate} onChange={e => setHistorySearchDate(e.target.value)} style={styles.dateInputSmall} />
-              <button onClick={() => {setHistorySearchTerm(''); setHistorySearchDate('');}} style={styles.clearBtn}>重置</button>
+            <input type="text" placeholder="🔍 搜尋關鍵字..." value={historySearchTerm} onChange={e => setHistorySearchTerm(e.target.value)} style={styles.searchInput} />
+            
+            <div style={{display:'flex', flexWrap:'wrap', alignItems:'center', gap:'8px', marginTop:'10px'}}>
+              <div style={{display:'flex', alignItems:'center', gap:'5px'}}>
+                <span style={{fontSize:'12px', color:'#666'}}>從:</span>
+                <input type="date" value={historyStartDate} onChange={e => setHistoryStartDate(e.target.value)} style={styles.dateInputSmall} />
+              </div>
+              <div style={{display:'flex', alignItems:'center', gap:'5px'}}>
+                <span style={{fontSize:'12px', color:'#666'}}>至:</span>
+                <input type="date" value={historyEndDate} onChange={e => setHistoryEndDate(e.target.value)} style={styles.dateInputSmall} />
+              </div>
+              <button onClick={() => {
+                setHistorySearchTerm(''); 
+                setHistoryStartDate(getTodayStr()); 
+                setHistoryEndDate(getTodayStr());
+              }} style={styles.clearBtn}>重置今天</button>
             </div>
           </div>
+
           {filteredHistory.length > 0 ? filteredHistory.map(t => (
             <TaskCard key={t.id} task={t} userName={userName} formatTime={formatTime} isHistory />
-          )) : <div style={{textAlign:'center', padding:'40px', color:'#999'}}>找不到符合條件的歷史任務</div>}
+          )) : <div style={{textAlign:'center', padding:'40px', color:'#999'}}>今天尚無歷史任務</div>}
         </section>
       )}
     </div>
   );
 }
 
-// 保留 TaskCard 與樣式物件 (完整保留)
 const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats }) => {
   const isDeleted = task.status === 3;
   const colors = getTaskCardColors(isEditing ? editForm.category : task.category, task.priority, isDeleted);
@@ -305,7 +320,7 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
             <div style={styles.details}>
               {task.deadline && <span style={{color:'#d4380d', fontWeight:'bold'}}>⏰ 限時: {task.deadline} | </span>}
               <div>📝 發布: {task.creator} | {formatTime(task.createdAt)}</div>
-              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>跑單: {task.picker} | {formatTime(task.claimedAt)}</div>}
+              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
               {task.status === 2 && <div style={{color:'green', fontWeight:'bold'}}>✅ 完成: {formatTime(task.completedAt)}</div>}
               {task.history && task.history.length > 0 && (
                 <div style={{marginTop:'5px', color:'#666', fontStyle:'italic', fontSize:'12px', borderTop:'1px dashed #ccc', paddingTop:'3px'}}>

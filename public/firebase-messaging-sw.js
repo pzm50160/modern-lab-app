@@ -1,4 +1,4 @@
-// Version: 2026.03.05.04 (版本號更新，觸發 App.js 檢查)
+// Version: 2026.03.09.01 (版本號更新，確保觸發 App.js 檢查)
 
 // 1. 強制立即更新機制：讓新版 SW 下載後不必等待，直接取代舊版
 self.addEventListener('install', () => {
@@ -6,7 +6,8 @@ self.addEventListener('install', () => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(clients.claim()); // 讓新版 SW 立刻控制所有開啟的視窗
+  // 讓新版 SW 立刻控制所有開啟的視窗，並清理舊快取
+  event.waitUntil(clients.claim()); 
 });
 
 // 2. 引入 Firebase 庫
@@ -30,14 +31,15 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   console.log('[sw.js] 收到背景數據訊息: ', payload);
 
-  const title = payload.data?.title || payload.notification?.title || "🚨 實驗室新任務";
-  const body = payload.data?.body || payload.notification?.body || "收到新任務，請進入 App 查看";
+  // 統一從 data 欄位抓取，因為我們 Cloud Functions 已改為 data 模式
+  const title = payload.data?.title || "🚨 實驗室新任務";
+  const body = payload.data?.body || "收到新任務，請進入 App 查看";
 
   const notificationOptions = {
     body: body,
     icon: '/logo192.png',
-    tag: 'task-notification', // 同標籤覆蓋，防止重複顯示
-    renotify: true,           // 有新訊時依然震動/發聲
+    tag: 'task-notification', // 同標籤覆蓋關鍵：相同標籤只會顯示最後一個，徹底解決「響兩聲」
+    renotify: true,           // tag 相同時依然觸發震動/聲響
     data: {
       url: 'https://modern-lab-app.web.app'
     }
@@ -53,9 +55,11 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // 如果已經開著 App，就直接聚焦到該頁面
       for (let client of windowClients) {
         if (client.url === urlToOpen && 'focus' in client) return client.focus();
       }
+      // 如果沒開 App，就新開一個視窗
       if (clients.openWindow) return clients.openWindow(urlToOpen);
     })
   );
