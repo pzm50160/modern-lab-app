@@ -64,10 +64,10 @@ function App() {
         registration.update();
 
         if (userName) {
-          console.log("偵測到已登入，開始背景同步 Token...");
+          console.log("偵測到已登入，執行 Token 同步檢查...");
           setupNotifications(userName);
           
-          // 5 秒後補跑一次，確保資料庫絕對有拿到最新 Token
+          // 5 秒後補跑一次，確保資料庫有拿到 Token
           setTimeout(() => setupNotifications(userName), 5000);
         }
 
@@ -92,7 +92,6 @@ function App() {
     try {
       let currentPermission = Notification.permission;
 
-      // 檢查雲端帳號是否有 Token
       const q = query(collection(db, "users"), where("name", "==", name));
       const snap = await getDocs(q);
       
@@ -102,43 +101,45 @@ function App() {
       const userData = userDoc.data();
       const hasTokenInDB = !!userData.fcmToken;
 
-      // 如果資料庫沒 Token 或權限沒開，主動要求權限
+      // 如果資料庫沒 Token，不論狀態為何都彈窗詢問
       if (!hasTokenInDB || currentPermission !== 'granted') {
-        console.log("偵測到帳號無推播金鑰或權限未開啟，嘗試請求權限...");
         currentPermission = await Notification.requestPermission();
       }
 
       if (currentPermission === 'granted') {
         const registration = await navigator.serviceWorker.ready;
-        
         const token = await getToken(messaging, { 
           vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE',
           serviceWorkerRegistration: registration 
         });
         
-        if (token) {
-          if (userData.fcmToken !== token) {
-            await updateDoc(doc(db, "users", userDoc.id), { 
-              fcmToken: token,
-              lastTokenUpdate: serverTimestamp() 
-            });
-            console.log("最新 Token 已成功同步至雲端");
-          } else {
-            console.log("Token 已存在且為最新，無需更新");
-          }
+        if (token && userData.fcmToken !== token) {
+          await updateDoc(doc(db, "users", userDoc.id), { 
+            fcmToken: token,
+            lastTokenUpdate: serverTimestamp() 
+          });
+          console.log("最新 Token 已成功同步至雲端");
         }
-      } else {
-        console.warn("通知權限仍未獲得，請點擊網址列旁的鎖頭檢查權限設定");
       }
     } catch (error) {
       console.error("推播設定錯誤:", error);
     }
   };
 
+  // --- 4. 關鍵修正：回歸標準前景監聽邏輯 ---
   useEffect(() => {
     const unsubMessage = onMessage(messaging, (payload) => {
-      alert(`${payload.notification.title}\n${payload.notification.body}`);
+      console.log("收到前景訊息封包:", payload);
+      
+      // 由於 Functions 已改回 notification 模式，這裡直接從 notification 抓取內容
+      if (payload.notification) {
+        alert(`${payload.notification.title}\n${payload.notification.body}`);
+      } else if (payload.data && payload.data.body) {
+        // 備援方案：如果只收到 data 也能抓到內容
+        alert(`${payload.data.title || '🚨 實驗室新任務'}\n${payload.data.body}`);
+      }
     });
+
     const qTasks = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
     const unsubTasks = onSnapshot(qTasks, (s) => setTasks(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const qCats = query(collection(db, "categories"), orderBy("name", "asc"));
@@ -146,7 +147,7 @@ function App() {
     return () => { unsubTasks(); unsubCats(); unsubMessage(); };
   }, [userName]);
 
-  // 其餘核心功能函數 ( handleAddTask, handleAuth, updateStatus, saveEdit, handleDeleteTask )
+  // 功能函數
   const handleAddTask = async (e) => {
     e.preventDefault();
     if (!form.clinic) return;
@@ -228,12 +229,10 @@ function App() {
     const matchesKeyword = t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
       t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
       t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
-    
     const compareDateTs = t.completedAt || t.createdAt;
     if (!compareDateTs) return false;
     const taskDateStr = compareDateTs.toDate().toISOString().split('T')[0];
-    const matchesDate = taskDateStr >= historyStartDate && taskDateStr <= historyEndDate;
-    return matchesKeyword && matchesDate;
+    return matchesKeyword && (taskDateStr >= historyStartDate && taskDateStr <= historyEndDate);
   });
 
   const lobbyCount = tasks.filter(t => t.status === 0).length;
@@ -268,7 +267,7 @@ function App() {
       {activeTab === 'lobby' && (
         <section>
           <div style={styles.formBox}>
-            <textarea value={form.clinic} onChange={e => setForm({...form, clinic: e.target.value})} placeholder="請輸入任務內容（可換行分段）" style={styles.textarea} />
+            <textarea value={form.clinic} onChange={e => setForm({...form, clinic: e.target.value})} placeholder="請輸入任務內容" style={styles.textarea} />
             <div style={styles.row}>
               <select value={form.category} onChange={e => setForm({...form, category: e.target.value})} style={styles.select}>
                 <option value="收檢">收檢</option><option value="耗材">耗材</option><option value="其他">其他</option>
@@ -308,9 +307,7 @@ function App() {
                 <input type="date" value={historyEndDate} onChange={e => setHistoryEndDate(e.target.value)} style={styles.dateInputSmall} />
               </div>
               <button onClick={() => {
-                setHistorySearchTerm(''); 
-                setHistoryStartDate(getTodayStr()); 
-                setHistoryEndDate(getTodayStr());
+                setHistorySearchTerm(''); setHistoryStartDate(getTodayStr()); setHistoryEndDate(getTodayStr());
               }} style={styles.clearBtn}>重置今天</button>
             </div>
           </div>
@@ -349,7 +346,7 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
             <div style={styles.details}>
               {task.deadline && <span style={{color:'#d4380d', fontWeight:'bold'}}>⏰ 限時: {task.deadline} | </span>}
               <div>📝 發布: {task.creator} | {formatTime(task.createdAt)}</div>
-              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
+              {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>🏃 接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
               {task.status === 2 && <div style={{color:'green', fontWeight:'bold'}}>✅ 完成: {formatTime(task.completedAt)}</div>}
               {task.history && task.history.length > 0 && (
                 <div style={{marginTop:'5px', color:'#666', fontStyle:'italic', fontSize:'12px', borderTop:'1px dashed #ccc', paddingTop:'3px'}}>
