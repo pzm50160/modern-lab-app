@@ -31,7 +31,33 @@ exports.sendTaskNotification = onDocumentCreated("tasks/{taskId}", async (event)
                     title: `🚨 實驗室新任務`,
                     body: `${newTask.creator} 發布了：[${newTask.category}] ${newTask.clinic}`,
                 },
-                // 保險起見，data 也放一份內容，確保舊版 SW 或特定平台也能讀到
+                // Android 特定配置
+                android: {
+                    priority: 'high',
+                    notification: {
+                        title: `🚨 實驗室新任務`,
+                        body: `${newTask.creator} 發布了：[${newTask.category}] ${newTask.clinic}`,
+                        icon: 'stock_ticker_update',
+                        color: '#f44336',
+                        clickAction: 'FLUTTER_NOTIFICATION_CLICK', // 雖然是 PWA，但有些舊版 Android 會參考此欄位
+                        visibility: 'public', // 確保鎖定螢幕顯示內容
+                        priority: 'high',
+                    },
+                },
+                // Web/PWA 特定配置
+                webpush: {
+                    headers: {
+                        Urgency: 'high'
+                    },
+                    notification: {
+                        body: `${newTask.creator} 發布了：[${newTask.category}] ${newTask.clinic}`,
+                        icon: 'https://modern-lab-app.web.app/logo192.png',
+                        requireInteraction: true, // 保持通知直到使用者點擊
+                    },
+                    fcmOptions: {
+                        link: "https://modern-lab-app.web.app"
+                    }
+                },
                 data: {
                     title: `🚨 實驗室新任務`,
                     body: `${newTask.creator} 發布了：[${newTask.category}] ${newTask.clinic}`,

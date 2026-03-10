@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDocs, where } from "firebase/firestore";
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, updateDoc, doc, serverTimestamp, getDocs, where, deleteDoc } from "firebase/firestore";
 import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 // Firebase 配置
@@ -60,15 +60,13 @@ function App() {
   // --- 2. 強化版 Service Worker 更新與 Token 自動同步邏輯 ---
   useEffect(() => {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.ready.then(async (registration) => {
+      navigator.serviceWorker.register('/firebase-messaging-sw.js').then((registration) => {
+        // 每次打開系統時都檢查更新
         registration.update();
 
         if (userName) {
           console.log("偵測到已登入，執行 Token 同步檢查...");
           setupNotifications(userName);
-          
-          // 5 秒後補跑一次，確保資料庫有拿到 Token
-          setTimeout(() => setupNotifications(userName), 5000);
         }
 
         registration.onupdatefound = () => {
@@ -76,9 +74,8 @@ function App() {
           if (newWorker) {
             newWorker.onstatechange = () => {
               if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                if (window.confirm("發現系統更新，請點擊確定以確保通知正常收發。")) {
-                  window.location.reload();
-                }
+                // 有新版本時自動重整
+                window.location.reload();
               }
             };
           }
@@ -113,7 +110,8 @@ function App() {
           serviceWorkerRegistration: registration 
         });
         
-        if (token && userData.fcmToken !== token) {
+        // 確保每次都更新到資料庫，即使 Token 一樣也更新 lastTokenUpdate 以供追蹤
+        if (token) {
           await updateDoc(doc(db, "users", userDoc.id), { 
             fcmToken: token,
             lastTokenUpdate: serverTimestamp() 
@@ -203,10 +201,15 @@ function App() {
   };
 
   const handleDeleteTask = async (task) => {
-    if (!window.confirm("確定刪除此任務？刪除後將移至歷史記錄。")) return;
-    const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
-    const log = `🗑️ ${userName} 於 ${nowStr} 刪除任務`;
-    await updateDoc(doc(db, "tasks", task.id), { status: 3, history: [...(task.history || []), log] });
+    if (userName === '昭名') {
+      if (!window.confirm("管理員「昭名」您好，確定要「永久刪除」此任務嗎？（此動作後資料將直接消失，無法恢復）")) return;
+      await deleteDoc(doc(db, "tasks", task.id));
+    } else {
+      if (!window.confirm("確定刪除此任務？刪除後將移至歷史記錄。")) return;
+      const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
+      const log = `🗑️ ${userName} 於 ${nowStr} 刪除任務`;
+      await updateDoc(doc(db, "tasks", task.id), { status: 3, history: [...(task.history || []), log] });
+    }
   };
 
   const formatTime = (ts) => {
@@ -225,7 +228,7 @@ function App() {
   };
 
   const filteredHistory = tasks.filter(t => {
-    if (t.status !== 2 && t.status !== 3) return false; 
+    if (t.status !== 1 && t.status !== 2 && t.status !== 3) return false; 
     const matchesKeyword = t.clinic?.toLowerCase().includes(historySearchTerm.toLowerCase()) || 
       t.creator?.toLowerCase().includes(historySearchTerm.toLowerCase()) ||
       t.picker?.toLowerCase().includes(historySearchTerm.toLowerCase());
@@ -283,7 +286,7 @@ function App() {
               <button onClick={handleAddTask} style={styles.blueBtnSmall}>發布任務</button>
             </div>
           </div>
-          {getSortedTasks(tasks.filter(t => t.status < 2)).map(t => (
+          {getSortedTasks(tasks.filter(t => t.status === 0)).map(t => (
             <TaskCard key={t.id} task={t} userName={userName} onClaim={() => updateStatus(t, 1)} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} onDelete={() => handleDeleteTask(t)} onEdit={() => {setEditingId(t.id); setEditForm({clinic: t.clinic, category: t.category, deadline: t.deadline || ''});}} isEditing={editingId === t.id} editForm={editForm} setEditForm={setEditForm} saveEdit={() => saveEdit(t)} cancelEdit={() => setEditingId(null)} formatTime={formatTime} cats={categories} />
           ))}
         </section>
@@ -312,7 +315,7 @@ function App() {
             </div>
           </div>
           {filteredHistory.length > 0 ? filteredHistory.map(t => (
-            <TaskCard key={t.id} task={t} userName={userName} formatTime={formatTime} isHistory />
+            <TaskCard key={t.id} task={t} userName={userName} formatTime={formatTime} isHistory onDelete={() => handleDeleteTask(t)} />
           )) : <div style={{textAlign:'center', padding:'40px', color:'#999'}}>今天尚無歷史任務</div>}
         </section>
       )}
@@ -358,9 +361,9 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
         )}
       </div>
       <div style={styles.actionArea}>
-        {!isHistory && !isEditing && (
+        {!isEditing && (
           <>
-            {task.status === 0 && <button onClick={onClaim} style={styles.claimBtn}>接單</button>}
+            {task.status === 0 && !isHistory && <button onClick={onClaim} style={styles.claimBtn}>接單</button>}
             {task.status === 1 && task.picker === userName && (
               <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
                 <button onClick={onComplete} style={styles.doneBtn}>完成</button>
@@ -368,8 +371,8 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
               </div>
             )}
             <div style={{marginTop:'5px'}}>
-               <button onClick={onEdit} style={styles.iconBtn}>✏️</button>
-               {task.creator === userName && <button onClick={onDelete} style={styles.iconBtn}>🗑️</button>}
+               {!isHistory && <button onClick={onEdit} style={styles.iconBtn}>✏️</button>}
+               {(task.creator === userName || userName === '昭名') && <button onClick={onDelete} style={styles.iconBtn}>🗑️</button>}
             </div>
           </>
         )}
