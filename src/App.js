@@ -35,6 +35,7 @@ function App() {
   const [tasks, setTasks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [userName, setUserName] = useState(localStorage.getItem('modernLabUser') || '');
+  const [isAdmin, setIsAdmin] = useState(false);
   const [activeTab, setActiveTab] = useState('lobby');
   const [loginForm, setLoginForm] = useState({ name: '', password: '' });
   
@@ -57,34 +58,30 @@ function App() {
     }
   }, [activeTab]);
 
-  // --- 2. 強化版 Service Worker 更新與 Token 自動同步邏輯 ---
+  // --- 2. 登入後自動同步 Token（SW 註冊已由 serviceWorkerRegistration.js 統一處理）---
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/firebase-messaging-sw.js').then((registration) => {
-        // 每次打開系統時都檢查更新
-        registration.update();
-
-        if (userName) {
-          console.log("偵測到已登入，執行 Token 同步檢查...");
-          setupNotifications(userName);
-        }
-
-        registration.onupdatefound = () => {
-          const newWorker = registration.installing;
-          if (newWorker) {
-            newWorker.onstatechange = () => {
-              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                // 有新版本時自動重整
-                window.location.reload();
-              }
-            };
-          }
-        };
-      });
+    if (userName) {
+      console.log("偵測到已登入，執行 Token 同步檢查...");
+      setupNotifications(userName);
+      loadUserRole(userName);
     }
   }, [userName]);
 
-  // --- 3. 強化版通知設定：強制檢查雲端 Token，無則再次詢問 ---
+  // --- 3. 載入使用者角色（管理員判斷）---
+  const loadUserRole = async (name) => {
+    try {
+      const q = query(collection(db, "users"), where("name", "==", name));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const userData = snap.docs[0].data();
+        setIsAdmin(userData.role === 'admin');
+      }
+    } catch (error) {
+      console.error("讀取角色失敗:", error);
+    }
+  };
+
+  // --- 4. 通知設定：只在 Token 變化時才寫入 Firestore ---
   const setupNotifications = async (name) => {
     try {
       let currentPermission = Notification.permission;
@@ -96,27 +93,29 @@ function App() {
       
       const userDoc = snap.docs[0];
       const userData = userDoc.data();
-      const hasTokenInDB = !!userData.fcmToken;
+      const oldToken = userData.fcmToken || '';
 
-      // 如果資料庫沒 Token，不論狀態為何都彈窗詢問
-      if (!hasTokenInDB || currentPermission !== 'granted') {
+      // 如果資料庫沒 Token 或尚未授權，就彈窗詢問
+      if (!oldToken || currentPermission !== 'granted') {
         currentPermission = await Notification.requestPermission();
       }
 
       if (currentPermission === 'granted') {
         const registration = await navigator.serviceWorker.ready;
-        const token = await getToken(messaging, { 
+        const newToken = await getToken(messaging, { 
           vapidKey: 'BEQDpcx_iPGyzx-0-e_vctw5TqCseajRjCHCE9XeRi4TIfXEk5ndC-XwRyJFYuSmrTxej_zweULO6ib3DGbYCeE',
           serviceWorkerRegistration: registration 
         });
         
-        // 確保每次都更新到資料庫，即使 Token 一樣也更新 lastTokenUpdate 以供追蹤
-        if (token) {
+        // 只在 Token 有變化時才寫入，避免不必要的 Firestore 寫入
+        if (newToken && newToken !== oldToken) {
           await updateDoc(doc(db, "users", userDoc.id), { 
-            fcmToken: token,
+            fcmToken: newToken,
             lastTokenUpdate: serverTimestamp() 
           });
-          console.log("最新 Token 已成功同步至雲端");
+          console.log("Token 已變更，新 Token 已同步至雲端");
+        } else if (newToken) {
+          console.log("Token 未變更，跳過寫入");
         }
       }
     } catch (error) {
@@ -157,9 +156,10 @@ function App() {
     } catch (err) { console.error("發布失敗", err); }
   };
 
-  const loginSuccess = (name) => {
+  const loginSuccess = (name, userData) => {
     setUserName(name);
     localStorage.setItem('modernLabUser', name);
+    setIsAdmin(userData?.role === 'admin');
     setupNotifications(name);
   };
 
@@ -171,12 +171,12 @@ function App() {
     const snap = await getDocs(q);
     if (snap.empty) {
       if (window.confirm(`建立新帳號「${name}」？`)) {
-        await addDoc(collection(db, "users"), { name, password });
-        loginSuccess(name);
+        await addDoc(collection(db, "users"), { name, password, role: 'user' });
+        loginSuccess(name, { role: 'user' });
       }
     } else {
-      const user = snap.docs[0].data();
-      user.password === password ? loginSuccess(name) : alert("密碼錯誤");
+      const userData = snap.docs[0].data();
+      userData.password === password ? loginSuccess(name, userData) : alert("密碼錯誤");
     }
   };
 
@@ -201,8 +201,8 @@ function App() {
   };
 
   const handleDeleteTask = async (task) => {
-    if (userName === '昭名') {
-      if (!window.confirm("管理員「昭名」您好，確定要「永久刪除」此任務嗎？（此動作後資料將直接消失，無法恢復）")) return;
+    if (isAdmin) {
+      if (!window.confirm(`管理員「${userName}」您好，確定要「永久刪除」此任務嗎？（此動作後資料將直接消失，無法恢復）`)) return;
       await deleteDoc(doc(db, "tasks", task.id));
     } else {
       if (!window.confirm("確定刪除此任務？刪除後將移至歷史記錄。")) return;
@@ -287,13 +287,13 @@ function App() {
             </div>
           </div>
           {getSortedTasks(tasks.filter(t => t.status === 0)).map(t => (
-            <TaskCard key={t.id} task={t} userName={userName} onClaim={() => updateStatus(t, 1)} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} onDelete={() => handleDeleteTask(t)} onEdit={() => {setEditingId(t.id); setEditForm({clinic: t.clinic, category: t.category, deadline: t.deadline || ''});}} isEditing={editingId === t.id} editForm={editForm} setEditForm={setEditForm} saveEdit={() => saveEdit(t)} cancelEdit={() => setEditingId(null)} formatTime={formatTime} cats={categories} />
+            <TaskCard key={t.id} task={t} userName={userName} isAdmin={isAdmin} onClaim={() => updateStatus(t, 1)} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} onDelete={() => handleDeleteTask(t)} onEdit={() => {setEditingId(t.id); setEditForm({clinic: t.clinic, category: t.category, deadline: t.deadline || ''});}} isEditing={editingId === t.id} editForm={editForm} setEditForm={setEditForm} saveEdit={() => saveEdit(t)} cancelEdit={() => setEditingId(null)} formatTime={formatTime} cats={categories} />
           ))}
         </section>
       )}
 
       {activeTab === 'myTasks' && getSortedTasks(tasks.filter(t => t.status === 1 && t.picker === userName)).map(t => (
-        <TaskCard key={t.id} task={t} userName={userName} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} formatTime={formatTime} />
+        <TaskCard key={t.id} task={t} userName={userName} isAdmin={isAdmin} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} formatTime={formatTime} />
       ))}
       
       {activeTab === 'history' && (
@@ -315,7 +315,7 @@ function App() {
             </div>
           </div>
           {filteredHistory.length > 0 ? filteredHistory.map(t => (
-            <TaskCard key={t.id} task={t} userName={userName} formatTime={formatTime} isHistory onDelete={() => handleDeleteTask(t)} />
+            <TaskCard key={t.id} task={t} userName={userName} isAdmin={isAdmin} formatTime={formatTime} isHistory onDelete={() => handleDeleteTask(t)} />
           )) : <div style={{textAlign:'center', padding:'40px', color:'#999'}}>今天尚無歷史任務</div>}
         </section>
       )}
@@ -323,7 +323,7 @@ function App() {
   );
 }
 
-const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats }) => {
+const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats }) => {
   const isDeleted = task.status === 3;
   const colors = getTaskCardColors(isEditing ? editForm.category : task.category, task.priority, isDeleted);
   return (
@@ -372,7 +372,7 @@ const TaskCard = ({ task, userName, onClaim, onCancel, onComplete, onDelete, onE
             )}
             <div style={{marginTop:'5px'}}>
                {!isHistory && <button onClick={onEdit} style={styles.iconBtn}>✏️</button>}
-               {(task.creator === userName || userName === '昭名') && <button onClick={onDelete} style={styles.iconBtn}>🗑️</button>}
+               {(task.creator === userName || isAdmin) && <button onClick={onDelete} style={styles.iconBtn}>🗑️</button>}
             </div>
           </>
         )}
