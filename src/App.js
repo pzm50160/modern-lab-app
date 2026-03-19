@@ -193,6 +193,27 @@ function App() {
     await updateDoc(doc(db, "tasks", task.id), data);
   };
 
+  const updateStocking = async (task) => {
+    const data = {
+      isStocked: true,
+      stocker: userName,
+      stockedAt: serverTimestamp()
+    };
+    await updateDoc(doc(db, "tasks", task.id), data);
+  };
+
+  const undoStocking = async (task) => {
+    if (!window.confirm("確定退回備貨？")) return;
+    const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
+    const log = `⚠️ ${userName} 於 ${nowStr} 退回備貨`;
+    await updateDoc(doc(db, "tasks", task.id), {
+      isStocked: false,
+      stocker: '',
+      stockedAt: null,
+      history: [...(task.history || []), log]
+    });
+  };
+
   const saveEdit = async (task) => {
     const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
     const log = `✏️ ${userName} 於 ${nowStr} 修改內容`;
@@ -287,7 +308,7 @@ function App() {
             </div>
           </div>
           {getSortedTasks(tasks.filter(t => t.status === 0)).map(t => (
-            <TaskCard key={t.id} task={t} userName={userName} isAdmin={isAdmin} onClaim={() => updateStatus(t, 1)} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} onDelete={() => handleDeleteTask(t)} onEdit={() => {setEditingId(t.id); setEditForm({clinic: t.clinic, category: t.category, deadline: t.deadline || ''});}} isEditing={editingId === t.id} editForm={editForm} setEditForm={setEditForm} saveEdit={() => saveEdit(t)} cancelEdit={() => setEditingId(null)} formatTime={formatTime} cats={categories} />
+            <TaskCard key={t.id} task={t} userName={userName} isAdmin={isAdmin} onClaim={() => updateStatus(t, 1)} onCancel={() => updateStatus(t, 0)} onComplete={() => updateStatus(t, 2)} onDelete={() => handleDeleteTask(t)} onEdit={() => {setEditingId(t.id); setEditForm({clinic: t.clinic, category: t.category, deadline: t.deadline || ''});}} isEditing={editingId === t.id} editForm={editForm} setEditForm={setEditForm} saveEdit={() => saveEdit(t)} cancelEdit={() => setEditingId(null)} formatTime={formatTime} cats={categories} onStock={() => updateStocking(t)} onUndoStock={() => undoStocking(t)} />
           ))}
         </section>
       )}
@@ -323,7 +344,7 @@ function App() {
   );
 }
 
-const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats }) => {
+const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDelete, onEdit, isEditing, editForm, setEditForm, saveEdit, cancelEdit, formatTime, isHistory, cats, onStock, onUndoStock }) => {
   const isDeleted = task.status === 3;
   const colors = getTaskCardColors(isEditing ? editForm.category : task.category, task.priority, isDeleted);
   return (
@@ -349,6 +370,7 @@ const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDe
             <div style={styles.details}>
               {task.deadline && <span style={{color:'#d4380d', fontWeight:'bold'}}>⏰ 限時: {task.deadline} | </span>}
               <div>📝 發布: {task.creator} | {formatTime(task.createdAt)}</div>
+              {task.isStocked && <div style={{color:'#722ed1', fontWeight:'bold'}}>📦 備貨: {task.stocker} | {formatTime(task.stockedAt)}</div>}
               {task.picker && <div style={{color:'#0056b3', fontWeight:'bold'}}>🏃 接單: {task.picker} | {formatTime(task.claimedAt)}</div>}
               {task.status === 2 && <div style={{color:'green', fontWeight:'bold'}}>✅ 完成: {formatTime(task.completedAt)}</div>}
               {task.history && task.history.length > 0 && (
@@ -362,8 +384,32 @@ const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDe
       </div>
       <div style={styles.actionArea}>
         {!isEditing && (
-          <>
-            {task.status === 0 && !isHistory && <button onClick={onClaim} style={styles.claimBtn}>接單</button>}
+          <div style={{display:'flex', flexDirection:'column', gap:'5px', alignItems:'center'}}>
+            {task.status === 0 && !isHistory && (
+              <>
+                {task.category === '耗材' && (
+                  <div style={{display:'flex', gap:'5px', width:'100%'}}>
+                    <button 
+                      onClick={onStock} 
+                      disabled={task.isStocked}
+                      style={task.isStocked ? styles.stockedBtn : styles.stockBtn}
+                    >
+                      {task.isStocked ? '已備貨' : '備貨'}
+                    </button>
+                    {task.isStocked && (
+                      <button onClick={onUndoStock} style={styles.undoStockBtn}>✕</button>
+                    )}
+                  </div>
+                )}
+                <button 
+                  onClick={onClaim} 
+                  disabled={task.category === '耗材' && !task.isStocked}
+                  style={(task.category === '耗材' && !task.isStocked) ? styles.disabledBtn : styles.claimBtn}
+                >
+                  接單
+                </button>
+              </>
+            )}
             {task.status === 1 && task.picker === userName && (
               <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
                 <button onClick={onComplete} style={styles.doneBtn}>完成</button>
@@ -374,7 +420,7 @@ const TaskCard = ({ task, userName, isAdmin, onClaim, onCancel, onComplete, onDe
                {!isHistory && <button onClick={onEdit} style={styles.iconBtn}>✏️</button>}
                {(task.creator === userName || isAdmin) && <button onClick={onDelete} style={styles.iconBtn}>🗑️</button>}
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
@@ -407,8 +453,12 @@ const styles = {
   clearBtn: { padding: '5px 10px', backgroundColor: '#eee', border: 'none', borderRadius: '5px', fontSize: '12px' },
   card: { padding: '12px', borderRadius: '10px', marginBottom: '10px', display: 'flex', alignItems: 'center', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' },
   details: { fontSize: '13px', color: '#666', lineHeight: '1.6' },
-  actionArea: { marginLeft: '10px', textAlign: 'center' },
-  claimBtn: { padding: '10px 15px', backgroundColor: '#ff4d4f', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold' },
+  actionArea: { marginLeft: '10px', textAlign: 'center', minWidth:'80px' },
+  claimBtn: { padding: '10px 15px', backgroundColor: '#ff4d4f', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', width:'100%' },
+  stockBtn: { padding: '10px 15px', backgroundColor: '#722ed1', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', width:'100%' },
+  stockedBtn: { padding: '10px 15px', backgroundColor: '#d9d9d9', color: '#8c8c8c', border: 'none', borderRadius: '8px', fontWeight: 'bold', width:'100%' },
+  undoStockBtn: { padding: '5px 10px', backgroundColor: '#ffccc7', color: '#a8071a', border: '1px solid #ff4d4f', borderRadius: '5px' },
+  disabledBtn: { padding: '10px 15px', backgroundColor: '#ffa39e', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', width:'100%', cursor: 'not-allowed', opacity: 0.6 },
   doneBtn: { padding: '8px 15px', backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold' },
   undoBtn: { padding: '5px 10px', backgroundColor: '#888', color: '#fff', border: 'none', borderRadius: '5px', fontSize: '12px' },
   saveBtn: { padding: '5px 10px', backgroundColor: '#28a745', color: '#fff', border: 'none', borderRadius: '5px' },
